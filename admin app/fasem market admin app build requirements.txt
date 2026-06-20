@@ -1,0 +1,473 @@
+================================================================================
+  FASEM MARKET ADMIN APP — BUILD REQUIREMENTS
+  Target Platform: Standalone Single-Page Application (SPA)
+  Backend API: FASEM-P Exchange (http://localhost:8000)
+  Date: 2026-06-20
+================================================================================
+
+TABLE OF CONTENTS
+  1. Purpose & Scope
+  2. App Architecture
+  3. Screens / Views
+  4. API Endpoints Required
+  5. Additional API Endpoints Needed (Backend Gaps)
+  6. Data Models
+  7. UI/UX Requirements
+  8. Security Requirements
+  9. Build Deliverables
+
+================================================================================
+1. PURPOSE & SCOPE
+================================================================================
+
+The FASEM Market Admin App is a standalone administrative interface for
+the FASEM-P Exchange platform. It is separate from the Basic-broker app
+(which is a trader-facing retail broker).
+
+This app is for EXCHANGE ADMINISTRATORS only — users with role='admin'.
+
+It provides:
+  - Full user account management
+  - Market & instrument oversight
+  - Cash/PPU funding console
+  - Profit distribution management
+  - System integrity monitoring (reconciliation)
+  - Trade surveillance
+
+================================================================================
+2. APP ARCHITECTURE
+================================================================================
+
+Option A (Recommended): Pure HTML/CSS/JS SPA
+  - Single index.html + style.css + app.js
+  - No build tools, no framework dependencies
+  - Communicates directly with the FASEM-P Exchange REST API
+  - Dark theme matching the FASEM-P brand
+
+Option B: React/Vue SPA
+  - npm-based project with component architecture
+  - More maintainable for complex admin interfaces
+  - Requires build step before deployment
+
+Option C: Backend-Integrated (FastAPI Jinja2 templates)
+  - Server-rendered HTML pages served by the backend itself
+  - No CORS issues, integrated auth with existing token system
+  - Updates require backend restart
+
+RECOMMENDED: Option A (same pattern as Basic-broker) for consistency
+and zero-dependency deployment.
+
+================================================================================
+3. SCREENS / VIEWS
+================================================================================
+
+3.1 LOGIN SCREEN
+  - Admin login form (username + password)
+  - Token persistence in localStorage
+  - Auto-redirect to dashboard on login
+  - Registration option (for initial admin setup)
+
+3.2 DASHBOARD (System Overview)
+  Must display:
+  - Reconciliation status (green/red indicator)
+    - Cash net zero check
+    - PPU matches float check
+  - Total users count
+  - Total active instruments count
+  - Total open orders count
+  - Total trades today
+  - Total PPU float across all instruments
+  - System cash in circulation
+  - Recent trades feed (last 10)
+
+3.3 USER MANAGEMENT
+  Must display:
+  - Table of ALL users (searchable, sortable)
+  - Each row: ID, Username, Role, Cash Balance, Holdings count, Created date
+  - Click user to expand/view details
+  User detail panel:
+  - Full account summary (cash + PPU holdings)
+  - Order history for that user
+  - Trade history for that user
+  - Ledger entries for that user
+  - P&L summary for that user
+  Actions:
+  - Credit cash to user
+  - Credit PPUs to user
+  - Change user role (trader <-> admin)
+  - Suspend / ban user (requires new API)
+  - View user's ledger statement
+
+3.4 INSTRUMENT MANAGEMENT (IPO Console)
+  Must display:
+  - Table of ALL instruments (active + delisted)
+  - Each row: ID, Name, Description, Total Float, Status, Created date, Created by
+  Actions:
+  - Create new instrument (IPO)
+    - Fields: Name, Description, Total Float
+  - Update instrument status (active <-> delisted)
+  - View order book for instrument
+  - View profit declaration history for instrument
+  - View all holdings for instrument
+
+3.5 FUNDING CONSOLE (Cash & PPU)
+  Must display:
+  - Cash credit form
+    - User selector (search by username or ID)
+    - Amount input
+    - Submit button (shows new balance in toast)
+  - PPU credit form
+    - User selector
+    - Instrument selector
+    - Units input
+    - Submit button
+  - Transaction log (requires new API)
+    - Recent cash/PPU credits
+    - Filter by user, type, date
+
+3.6 ORDER MANAGEMENT (Trade Oversight)
+  Must display:
+  - Table of ALL orders across all users
+  - Filters: status (open/partially_filled/filled/cancelled),
+    instrument, side (buy/sell), date range, user
+  - Each row: ID, User, Instrument, Side, Price, Qty,
+    Filled, Remaining, Status, Time
+  Actions:
+  - Cancel any open/partially_filled order
+  - Force-cancel any order (requires new API)
+
+3.7 TRADE SURVEILLANCE
+  Must display:
+  - Table of ALL executed trades
+  - Filters: instrument, buyer, seller, date range, price range
+  - Each row: ID, Instrument, Buyer, Seller, Price, Qty,
+    Total Value, Time
+  - Trade volume chart (optional, nice-to-have)
+  - Price history over time
+
+3.8 PROFIT DISTRIBUTION
+  Must display:
+  - Profit declaration form
+    - Instrument selector
+    - Period label (e.g. "Q2-2026")
+    - Total profit amount
+    - Preview: shows calculated profit_per_ppu
+  - Payout preview before distribution
+    - Lists all holders and what they will receive
+  - Distribute button (confirmation dialog)
+  - Profit declaration history table
+    - Each row: ID, Instrument, Period, Total Profit,
+      Profit per PPU, Status, Declared at, Distributed at
+
+3.9 RECONCILIATION DASHBOARD
+  Must display:
+  - Large status cards:
+    - Cash Net Zero: OK / FAIL
+    - PPU Matches Float: OK / FAIL
+    - All Balanced: YES / NO
+  - Detailed numbers:
+    - Cash total (should be $0.00)
+    - PPU total in circulation
+    - Instrument total float
+  - Last checked timestamp
+  - Refresh button (manual re-check)
+  - Auto-refresh every 30 seconds
+
+3.10 DATABASE EXPLORER (Raw View)
+  Must display:
+  - Table tabs: Users, Instruments, PPU Holdings, Orders,
+    Trades, Ledger Entries, Profit Declarations, Profit Distributions
+  - Raw table content with human-readable foreign keys
+  - Row count per table
+  - Search within table data
+  - Pagination (limit 100, load more)
+
+================================================================================
+4. API ENDPOINTS REQUIRED
+================================================================================
+
+These endpoints already exist in FASEM-P Exchange API v2.0.0:
+
+  SYSTEM
+    GET  /api/health                          — Server health check
+
+  AUTH
+    POST /api/auth/register                   — Create admin account
+    POST /api/auth/login                      — Get admin token
+
+  ADMIN — USER MANAGEMENT
+    GET  /api/admin/users                     — List all users with balances
+    GET  /api/accounts/{user_id}              — View any user's account
+    GET  /api/orders/user/{user_id}           — View any user's orders
+    GET  /api/ledger/{user_id}                — View any user's ledger
+    GET  /api/accounts/{user_id}/pnl          — View any user's P&L
+
+  ADMIN — INSTRUMENTS
+    POST /api/admin/instruments               — Create new instrument (IPO)
+    PUT  /api/admin/instruments/{id}          — Update instrument status
+    GET  /api/instruments                     — List all instruments
+    GET  /api/orderbook/{instrument_id}       — View order book
+    GET  /api/instruments/{id}/summary        — Market summary
+
+  ADMIN — FUNDING
+    POST /api/admin/cash/credit               — Credit cash to user
+    POST /api/admin/ppu/credit                — Credit PPUs to user
+
+  ADMIN — ORDER OVERSIGHT
+    GET  /api/admin/orders                    — List all orders (filterable)
+    POST /api/orders/cancel/{order_id}        — Cancel any order (admin can)
+    GET  /api/trades                          — List all trades (filterable)
+
+  ADMIN — HOLDINGS
+    GET  /api/admin/holdings                  — List all PPU holdings
+
+  ADMIN — PROFIT
+    POST /api/profit/declare                  — Declare profit
+    POST /api/profit/distribute/{id}          — Distribute profit
+    GET  /api/profit/history/{instrument_id}  — View profit history
+
+  ADMIN — RECONCILIATION
+    GET  /api/reconcile                       — Ledger reconciliation check
+
+  DATABASE EXPLORER
+    GET  /api/db/schema                       — View table schemas
+    GET  /api/db/tables                       — List tables with row counts
+    GET  /api/db/table/{table_name}           — View table contents
+
+  TRADE DATA
+    GET  /api/trades?instrument_id=N&user_id=N&limit=N
+                                              — Filtered trade history
+
+================================================================================
+5. ADDITIONAL API ENDPOINTS NEEDED (Backend Gaps)
+================================================================================
+
+These endpoints do NOT exist yet and need to be added to the backend
+before the admin app can implement the full feature set:
+
+  5.1  View Cash/PPU Credit Transaction History
+       GET  /api/admin/transactions?type=cash|ppu&user_id=N&limit=100
+       Auth: Admin token
+       Purpose: The admin needs to see a log of all cash/PPU credits
+       and debits, not just the current balances. Currently there is no
+       way to audit who was credited what and when.
+       Response: [{
+         "id": 1,
+         "type": "cash_credit",
+         "admin_id": 1,
+         "admin_username": "admin",
+         "user_id": 2,
+         "username": "trader1",
+         "amount": 50000.00,
+         "instrument_id": null,
+         "balance_after": 75000.00,
+         "created_at": "2026-06-20 ..."
+       }, ...]
+
+  5.2  Suspend / Reactivate User
+       PUT  /api/admin/users/{user_id}/status?token=admin_token&status=suspended
+       Auth: Admin token
+       Purpose: Admin needs the ability to suspend a user (prevent
+       trading/login) and reactivate them. Currently there is no
+       user status field or endpoint.
+       Response: {"message": "User 3 status set to 'suspended'"}
+
+  5.3  Change User Role
+       PUT  /api/admin/users/{user_id}/role?token=admin_token&role=admin
+       Auth: Admin token (super-admin only)
+       Purpose: Promote a trader to admin, or demote an admin to trader.
+       Response: {"message": "User 3 role changed to 'admin'"}
+
+  5.4  Force-Cancel Any Order (Even Filled)
+       POST /api/admin/orders/force-cancel/{order_id}?token=admin_token
+       Auth: Admin token
+       Purpose: Emergency order cancellation that can override even
+       filled/cancelled status. Needed for regulatory/compliance reasons.
+       Response: {"message": "Order force-cancelled", "reversed_trades": [1, 2]}
+
+  5.5  System Dashboard Statistics
+       GET  /api/admin/dashboard/stats?token=admin_token
+       Auth: Admin token
+       Purpose: Single endpoint to get all dashboard summary numbers
+       instead of making 5+ separate API calls.
+       Response: {
+         "total_users": 5,
+         "total_active_instruments": 2,
+         "total_open_orders": 8,
+         "total_trades_today": 15,
+         "total_volume_today": 7500.00,
+         "total_ppu_float": 20000.00,
+         "cash_in_circulation": 100000.00,
+         "all_balanced": true
+       }
+
+  5.6  Adjust Instrument Float
+       POST /api/admin/instruments/{instrument_id}/adjust-float?token=admin_token&additional_float=5000
+       Auth: Admin token
+       Purpose: In rare cases the exchange may need to increase the
+       total float of an instrument. Currently total_float is fixed
+       at IPO time and cannot be changed.
+       Response: {"message": "Float adjusted by +5000", "new_total_float": 15000.00}
+
+  5.7  Admin Search Users
+       GET  /api/admin/users/search?token=admin_token&q=joh&limit=10
+       Auth: Admin token
+       Purpose: Search users by username partial match. Current
+       /api/admin/users returns ALL users with no search/filter.
+       Response: [{"id": 2, "username": "john_doe", "role": "trader", ...}, ...]
+
+================================================================================
+6. DATA MODELS
+================================================================================
+
+Key data structures the app must handle:
+
+  User: {
+    id, username, role, cash_balance, ppu_holdings: [{instrument_id, name, units}],
+    created_at, status (new)
+  }
+
+  Instrument: {
+    id, name, description, total_float, status, created_by, created_at
+  }
+
+  Order: {
+    id, user_id, username, instrument_id, instrument_name, side, price,
+    quantity, filled_quantity, status, created_at
+  }
+
+  Trade: {
+    id, buy_order_id, sell_order_id, instrument_id, instrument_name,
+    buyer_id, buyer_name, seller_id, seller_name, quantity, price,
+    total_value, created_at
+  }
+
+  Holding: {
+    user_id, username, instrument_id, instrument_name, units, avg_cost_basis
+  }
+
+  Declaration: {
+    id, instrument_id, period_label, total_profit, profit_per_ppu,
+    total_ppus, status, declared_at, distributed_at
+  }
+
+  LedgerEntry: {
+    id, ledger_type, user_id, trade_id, instrument_id, debit, credit,
+    description, created_at
+  }
+
+  Reconciliation: {
+    cash_net_zero, cash_total, ppu_matches_float, ppu_total,
+    instrument_float, all_balanced
+  }
+
+================================================================================
+7. UI/UX REQUIREMENTS
+================================================================================
+
+  7.1 BRANDING
+  - Title: "FASEM Market Admin"
+  - Color scheme: Dark theme (#0a0e17 background, #00d68f accent green,
+    #ffaa00 accent amber for admin-specific elements)
+  - Monospace font for data tables
+  - Consistent with FASEM-P brand identity
+
+  7.2 LAYOUT
+  - Fixed header with logo + logged-in admin username + logout button
+  - Sidebar OR top navigation bar with view icons
+  - Main content area with card-based layout
+  - Toast notifications for action feedback (success/error)
+  - Modal dialogs for forms (create instrument, credit cash, etc.)
+  - Confirmation dialogs for destructive actions (cancel order, suspend user)
+
+  7.3 RESPONSIVENESS
+  - Desktop-first (admin is primarily desktop)
+  - Minimum 1024px width support
+  - Scrollable tables with sticky headers
+  - Collapsible sidebar on smaller screens
+
+  7.4 DATA DISPLAY
+  - Server-side pagination for all tables (limit/offset)
+  - Column sorting by clicking headers
+  - Status badges (colored pills)
+  - Side indicators (BUY=green, SELL=red)
+  - Loading states (spinner/skeleton)
+  - Empty states with helpful messages
+  - Error states with retry button
+
+  7.5 ACTIONS & WORKFLOWS
+
+  Credit Cash to User:
+    1. Admin searches/selects user
+    2. Enters amount
+    3. Preview shows user's current balance
+    4. Click Credit
+    5. Toast shows new balance
+    6. User row updates in table
+
+  Create Instrument (IPO):
+    1. Opens modal form
+    2. Name, Description, Total Float
+    3. Submit calls POST /api/admin/instruments
+    4. Modal closes, table refreshes
+
+  Profit Distribution:
+    1. Select instrument
+    2. Enter period + total profit
+    3. Preview shows profit_per_ppu
+    4. Optional: Show payout preview (all holders + amounts)
+    5. Click Distribute
+    6. Confirmation dialog
+    7. Toast with distribution result
+    8. History table refreshes
+
+================================================================================
+8. SECURITY REQUIREMENTS
+================================================================================
+
+  - Every API call must include the admin token
+  - Token stored in localStorage (same pattern as Basic-broker)
+  - Auto-redirect to login on 401 response
+  - Admin-only nav items hidden for non-admin users
+  - No sensitive data cached in localStorage (no balances, no passwords)
+  - Session timeout: token expires on server restart (per API spec)
+  - XSS protection: all user-supplied data escaped before DOM insertion
+  - CSRF: not needed (token-based auth, no cookies)
+
+================================================================================
+9. BUILD DELIVERABLES
+================================================================================
+
+Phase 1 — MVP (Minimum Viable Admin)
+  - Login + Dashboard (reconciliation + system stats)
+  - User Management (list, view, credit cash/PPU)
+  - Instrument Management (list, create IPO, delist)
+  - Order Management (list, filter, cancel)
+  - Uses 15 existing API endpoints
+  - Files: admin.html, admin.css, admin.js
+
+Phase 2 — Trading Oversight
+  - Trade Surveillance (all trades, filters)
+  - Holdings overview (system-wide positions)
+  - User detail drill-down (orders, trades, ledger, P&L)
+  - Uses 5 additional existing API endpoints
+
+Phase 3 — Profit Management
+  - Profit declaration + distribution workflow
+  - Payout preview
+  - Distribution history
+  - Uses 3 existing API endpoints
+
+Phase 4 — Advanced Admin Features
+  - Requires 7 new backend endpoints (Section 5)
+  - User suspend/reactivate
+  - Role management
+  - Transaction audit log
+  - Force-cancel orders
+  - Dashboard stats endpoint
+  - Instrument float adjustment
+  - User search
+
+================================================================================
+END OF BUILD REQUIREMENTS
+================================================================================

@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FASEM Market Admin</title>
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+
+  <!-- ========== AUTH CONTAINER ========== -->
+  <div id="authContainer" class="auth-container"></div>
+
+  <!-- ========== APP SHELL ========== -->
+  <div id="appShell" style="display:none">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-logo">
+        <span>FASEM</span>
+        <small>Market Admin</small>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button class="nav-btn active" data-view="dashboard" onclick="navigateTo('dashboard')">
+          <span class="nav-icon">&#9632;</span> Dashboard
+        </button>
+        <button class="nav-btn" data-view="users" onclick="navigateTo('users')">
+          <span class="nav-icon">&#9783;</span> Users
+        </button>
+        <button class="nav-btn" data-view="instruments" onclick="navigateTo('instruments')">
+          <span class="nav-icon">&#9881;</span> Instruments
+        </button>
+        <button class="nav-btn" data-view="funding" onclick="navigateTo('funding')">
+          <span class="nav-icon">&#36;</span> Funding
+        </button>
+        <button class="nav-btn" data-view="orders" onclick="navigateTo('orders')">
+          <span class="nav-icon">&#9776;</span> Orders
+        </button>
+        <button class="nav-btn" data-view="trades" onclick="navigateTo('trades')">
+          <span class="nav-icon">&#8644;</span> Trades
+        </button>
+        <button class="nav-btn" data-view="profit" onclick="navigateTo('profit')">
+          <span class="nav-icon">&#9733;</span> Profit
+        </button>
+        <button class="nav-btn" data-view="reconciliation" onclick="navigateTo('reconciliation')">
+          <span class="nav-icon">&#10003;</span> Reconciliation
+        </button>
+        <button class="nav-btn" data-view="dbexplorer" onclick="navigateTo('dbexplorer')">
+          <span class="nav-icon">&#128196;</span> DB Explorer
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="sidebar-user" id="sidebarUser"></div>
+        <button class="btn-logout" onclick="handleLogout()">Logout</button>
+      </div>
+    </aside>
+
+    <!-- MAIN CONTENT -->
+    <div class="main-area">
+
+      <!-- HEADER -->
+      <header class="app-header">
+        <h1 id="viewTitle">Dashboard</h1>
+        <div class="header-actions" id="headerActions"></div>
+      </header>
+
+      <main class="app-main">
+
+        <!-- Dashboard -->
+        <div id="view-dashboard" class="view active"></div>
+
+        <!-- Users -->
+        <div id="view-users" class="view"></div>
+
+        <!-- Instruments -->
+        <div id="view-instruments" class="view"></div>
+
+        <!-- Funding -->
+        <div id="view-funding" class="view"></div>
+
+        <!-- Orders -->
+        <div id="view-orders" class="view"></div>
+
+        <!-- Trades -->
+        <div id="view-trades" class="view"></div>
+
+        <!-- Profit -->
+        <div id="view-profit" class="view"></div>
+
+        <!-- Reconciliation -->
+        <div id="view-reconciliation" class="view"></div>
+
+        <!-- DB Explorer -->
+        <div id="view-dbexplorer" class="view"></div>
+
+      </main>
+    </div>
+
+  </div>
+
+  <!-- ========== TOAST CONTAINER ========== -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- ========== MODAL CONTAINER ========== -->
+  <div id="modalOverlay" class="modal-overlay" style="display:none">
+    <div class="modal-card" id="modalContent"></div>
+  </div>
+
+  <!-- ========== SCRIPTS ========== -->
+  <script src="admin.js"></script>
+
+</body>
+</html>

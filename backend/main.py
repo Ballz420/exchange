@@ -10,7 +10,7 @@ Endpoints:
   Accounting /api/accounts/{user_id}, /api/ledger/{user_id}, /api/reconcile
   Profit     /api/profit/*
 """
-import hashlib, secrets, os
+import hashlib, secrets, os, json
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,6 +22,37 @@ from pnl import user_pnl, avg_cost_basis
 
 # === INIT ===
 init_db()
+
+# === ADD MISSING COLUMNS FOR NEW FEATURES ===
+def _migrate_db():
+    """Add missing columns/ tables for admin features."""
+    conn = get_connection()
+    c = conn.cursor()
+    # Add status column to users if missing
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'suspended'))")
+    except Exception:
+        pass  # column already exists
+    # Create admin_transactions table if missing
+    c.executescript("""
+        CREATE TABLE IF NOT EXISTS admin_transactions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            type            TEXT NOT NULL CHECK(type IN ('cash_credit', 'ppu_credit', 'cash_debit', 'ppu_debit')),
+            admin_id        INTEGER NOT NULL REFERENCES users(id),
+            user_id         INTEGER NOT NULL REFERENCES users(id),
+            amount          REAL NOT NULL DEFAULT 0,
+            instrument_id   INTEGER REFERENCES instruments(id),
+            balance_before  REAL NOT NULL DEFAULT 0,
+            balance_after   REAL NOT NULL DEFAULT 0,
+            description     TEXT DEFAULT '',
+            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+_migrate_db()
+
 app = FastAPI(title="FASEM-P Exchange", version="2.0.0", docs_url="/docs")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -70,10 +101,14 @@ def register(req: RegisterReq):
 @app.post("/api/auth/login")
 def login(req: LoginReq):
     conn = get_connection()
-    u = conn.execute("SELECT id, username, role FROM users WHERE username=? AND password_hash=?",
-                     (req.username, hash_pw(req.password))).fetchone()
+    u = conn.execute(
+        "SELECT id, username, role, status FROM users WHERE username=? AND password_hash=?",
+        (req.username, hash_pw(req.password))
+    ).fetchone()
     conn.close()
     if not u: raise HTTPException(401, "Invalid credentials")
+    if u["status"] == "suspended":
+        raise HTTPException(403, "Account is suspended")
     token = gen_token()
     tokens[token] = {"user_id": u["id"], "username": u["username"], "role": u["role"]}
     return {"token": token, "user_id": u["id"], "username": u["username"], "role": u["role"]}
@@ -175,9 +210,19 @@ class CashCredit(BaseModel):
 
 @app.post("/api/admin/cash/credit")
 def admin_cash_credit(req: CashCredit):
-    require_admin(req.token)
+    admin = require_admin(req.token)
+    bal_before = get_balance(req.user_id, "cash")
     post_double("cash", 0, req.user_id, req.amount, description=f"Admin cash credit: ${req.amount}")
-    return {"message": f"Credited ${req.amount} to user {req.user_id}", "new_balance": get_balance(req.user_id, "cash")}
+    bal_after = get_balance(req.user_id, "cash")
+    # Log transaction
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO admin_transactions (type, admin_id, user_id, amount, balance_before, balance_after, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("cash_credit", admin["user_id"], req.user_id, req.amount, bal_before, bal_after, f"Admin cash credit: ${req.amount}")
+    )
+    conn.commit()
+    conn.close()
+    return {"message": f"Credited ${req.amount} to user {req.user_id}", "new_balance": bal_after}
 
 class PPUCredit(BaseModel):
     token: str
@@ -187,16 +232,265 @@ class PPUCredit(BaseModel):
 
 @app.post("/api/admin/ppu/credit")
 def admin_ppu_credit(req: PPUCredit):
-    require_admin(req.token)
+    admin = require_admin(req.token)
+    bal_before = get_balance(req.user_id, "ppu", req.instrument_id)
     # Credit PPUs from the system (user 0 = exchange account)
     post_double("ppu", 0, req.user_id, req.units, instrument_id=req.instrument_id, description=f"Admin PPU credit: {req.units} units")
     # Update ppu_holdings
     conn = get_connection()
     conn.execute("INSERT INTO ppu_holdings (user_id, instrument_id, units) VALUES (?, ?, ?) ON CONFLICT(user_id, instrument_id) DO UPDATE SET units = units + ?",
                  (req.user_id, req.instrument_id, req.units, req.units))
+    bal_after = get_balance(req.user_id, "ppu", req.instrument_id)
+    # Log transaction
+    conn.execute(
+        "INSERT INTO admin_transactions (type, admin_id, user_id, amount, instrument_id, balance_before, balance_after, description) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        ("ppu_credit", admin["user_id"], req.user_id, req.units, req.instrument_id, bal_before, bal_after, f"Admin PPU credit: {req.units} units")
+    )
     conn.commit()
     conn.close()
-    return {"message": f"Credited {req.units} PPUs to user {req.user_id}", "new_balance": get_balance(req.user_id, "ppu", req.instrument_id)}
+    return {"message": f"Credited {req.units} PPUs to user {req.user_id}", "new_balance": bal_after}
+
+# ====================== BACKEND GAP 5.1: TRANSACTION HISTORY ======================
+
+@app.get("/api/admin/transactions")
+def admin_transactions(token: str, type: str = None, user_id: int = None, limit: int = 100):
+    """Audit log of all cash/PPU credits by admins."""
+    require_admin(token)
+    conn = get_connection()
+    q = """SELECT t.*, a.username as admin_username, u.username as username
+           FROM admin_transactions t
+           JOIN users a ON t.admin_id=a.id
+           JOIN users u ON t.user_id=u.id
+           WHERE 1=1"""
+    p = []
+    if type:
+        q += " AND t.type=?"
+        p.append(type)
+    if user_id:
+        q += " AND t.user_id=?"
+        p.append(user_id)
+    q += " ORDER BY t.created_at DESC LIMIT ?"
+    p.append(limit)
+    rows = conn.execute(q, p).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+# ====================== BACKEND GAP 5.2: SUSPEND / REACTIVATE USER ======================
+
+@app.put("/api/admin/users/{user_id}/status")
+def admin_user_status(user_id: int, token: str, status: str = Query(...)):
+    """Suspend or reactivate a user. Prevents login when suspended."""
+    require_admin(token)
+    if status not in ("active", "suspended"):
+        raise HTTPException(400, "Status must be 'active' or 'suspended'")
+    conn = get_connection()
+    user = conn.execute("SELECT id, username, status FROM users WHERE id=?", (user_id,)).fetchone()
+    if not user:
+        conn.close()
+        raise HTTPException(404, "User not found")
+    if user["username"] == "system":
+        conn.close()
+        raise HTTPException(400, "Cannot suspend system account")
+    conn.execute("UPDATE users SET status=? WHERE id=?", (status, user_id))
+    conn.commit()
+    conn.close()
+    return {"message": f"User {user_id} status set to '{status}'", "username": user["username"]}
+
+# ====================== BACKEND GAP 5.3: CHANGE USER ROLE ======================
+
+@app.put("/api/admin/users/{user_id}/role")
+def admin_user_role(user_id: int, token: str, role: str = Query(...)):
+    """Promote/demote a user's role (admin/trader)."""
+    require_admin(token)
+    if role not in ("trader", "admin"):
+        raise HTTPException(400, "Role must be 'trader' or 'admin'")
+    conn = get_connection()
+    user = conn.execute("SELECT id, username FROM users WHERE id=?", (user_id,)).fetchone()
+    if not user:
+        conn.close()
+        raise HTTPException(404, "User not found")
+    if user["username"] == "system":
+        conn.close()
+        raise HTTPException(400, "Cannot change system account role")
+    conn.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
+    conn.commit()
+    conn.close()
+    return {"message": f"User {user_id} role changed to '{role}'", "username": user["username"]}
+
+# ====================== BACKEND GAP 5.4: FORCE-CANCEL ORDER ======================
+
+@app.post("/api/admin/orders/force-cancel/{order_id}")
+def admin_force_cancel_order(order_id: int, token: str):
+    """Force-cancel any order (even filled/cancelled) for regulatory purposes.
+       Reverses any trades associated with the order."""
+    require_admin(token)
+    conn = get_connection()
+    order = conn.execute("SELECT id, user_id, instrument_id, side, quantity, filled_quantity, status FROM orders WHERE id=?", (order_id,)).fetchone()
+    if not order:
+        conn.close()
+        raise HTTPException(404, "Order not found")
+
+    reversed_trades = []
+
+    # If order had fills, reverse associated trades
+    if order["filled_quantity"] > 0:
+        # Find trades involving this order
+        if order["side"] == "buy":
+            trades = conn.execute(
+                "SELECT id, buyer_id, seller_id, quantity, price, total_value FROM trades WHERE buy_order_id=?",
+                (order_id,)).fetchall()
+        else:
+            trades = conn.execute(
+                "SELECT id, buyer_id, seller_id, quantity, price, total_value FROM trades WHERE sell_order_id=?",
+                (order_id,)).fetchall()
+
+        for trade in trades:
+            # Reverse: seller returns cash, buyer returns PPUs
+            post_double("cash", trade["seller_id"], trade["buyer_id"], trade["total_value"],
+                         trade_id=trade["id"], instrument_id=order["instrument_id"],
+                         description=f"Force-cancel reversal of trade #{trade['id']}")
+            post_double("ppu", trade["buyer_id"], trade["seller_id"], trade["quantity"],
+                         trade_id=trade["id"], instrument_id=order["instrument_id"],
+                         description=f"Force-cancel reversal of trade #{trade['id']}")
+
+            # Update holdings
+            for uid, mult in [(trade["buyer_id"], -1), (trade["seller_id"], 1)]:
+                existing = conn.execute("SELECT id, units FROM ppu_holdings WHERE user_id=? AND instrument_id=?",
+                                        (uid, order["instrument_id"])).fetchone()
+                delta = round(trade["quantity"] * mult, 2)
+                if existing:
+                    new_units = round(existing["units"] + delta, 2)
+                    if new_units < 0: new_units = 0
+                    conn.execute("UPDATE ppu_holdings SET units=? WHERE id=?", (new_units, existing["id"]))
+                else:
+                    conn.execute("INSERT INTO ppu_holdings (user_id, instrument_id, units) VALUES (?, ?, ?)",
+                                 (uid, order["instrument_id"], max(delta, 0)))
+
+            reversed_trades.append(trade["id"])
+
+    # Update order status to cancelled
+    old_status = order["status"]
+    conn.execute("UPDATE orders SET status='cancelled', filled_quantity=0 WHERE id=?", (order_id,))
+    conn.commit()
+    conn.close()
+
+    return {
+        "message": f"Order {order_id} force-cancelled (was: {old_status})",
+        "order_id": order_id,
+        "reversed_trades": reversed_trades,
+        "trades_reversed": len(reversed_trades)
+    }
+
+# ====================== BACKEND GAP 5.5: DASHBOARD STATS ======================
+
+@app.get("/api/admin/dashboard/stats")
+def admin_dashboard_stats(token: str):
+    """Single endpoint for all dashboard summary numbers."""
+    require_admin(token)
+    conn = get_connection()
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+
+    total_users = conn.execute("SELECT COUNT(*) as c FROM users WHERE id>0").fetchone()["c"]
+    total_active_instruments = conn.execute("SELECT COUNT(*) as c FROM instruments WHERE status='active'").fetchone()["c"]
+    total_open_orders = conn.execute(
+        "SELECT COUNT(*) as c FROM orders WHERE status IN ('open', 'partially_filled')"
+    ).fetchone()["c"]
+    total_trades_today = conn.execute(
+        "SELECT COUNT(*) as c FROM trades WHERE date(created_at)=?", (today,)
+    ).fetchone()["c"]
+    total_volume_today = conn.execute(
+        "SELECT COALESCE(SUM(total_value), 0) as s FROM trades WHERE date(created_at)=?", (today,)
+    ).fetchone()["s"]
+
+    # PPU float = sum of all instrument total_floats where active
+    total_ppu_float = conn.execute(
+        "SELECT COALESCE(SUM(total_float), 0) as s FROM instruments WHERE status='active'"
+    ).fetchone()["s"]
+
+    # Cash in circulation = sum of all user cash balances (positive side)
+    # Query ledger for net cash per user (excluding system)
+    cash_entries = conn.execute(
+        "SELECT COALESCE(SUM(credit - debit), 0) as s FROM ledger_entries WHERE ledger_type='cash' AND user_id>0"
+    ).fetchone()["s"]
+
+    # Reconciliation
+    recon = rec_ledger()
+
+    conn.close()
+
+    return {
+        "total_users": total_users,
+        "total_active_instruments": total_active_instruments,
+        "total_open_orders": total_open_orders,
+        "total_trades_today": total_trades_today,
+        "total_volume_today": round(total_volume_today, 2),
+        "total_ppu_float": round(total_ppu_float, 2),
+        "cash_in_circulation": round(cash_entries, 2),
+        "all_balanced": recon.get("all_balanced", False),
+        "cash_net_zero": recon.get("cash_net_zero", False),
+        "ppu_matches_float": recon.get("ppu_matches_float", False)
+    }
+
+# ====================== BACKEND GAP 5.6: ADJUST INSTRUMENT FLOAT ======================
+
+@app.post("/api/admin/instruments/{instrument_id}/adjust-float")
+def admin_adjust_float(instrument_id: int, token: str, additional_float: float = Query(..., gt=0)):
+    """Increase the total float of an instrument. Cannot decrease."""
+    require_admin(token)
+    conn = get_connection()
+    inst = conn.execute("SELECT id, name, total_float FROM instruments WHERE id=?", (instrument_id,)).fetchone()
+    if not inst:
+        conn.close()
+        raise HTTPException(404, "Instrument not found")
+    new_total = round(inst["total_float"] + additional_float, 2)
+    conn.execute("UPDATE instruments SET total_float=? WHERE id=?", (new_total, instrument_id))
+    # Also credit the additional float to the system account for distribution
+    post_double("ppu", 0, 0, additional_float, instrument_id=instrument_id,
+                 description=f"Float adjustment: +{additional_float}")
+    # Update system holdings
+    existing = conn.execute("SELECT id, units FROM ppu_holdings WHERE user_id=0 AND instrument_id=?", (instrument_id,)).fetchone()
+    if existing:
+        conn.execute("UPDATE ppu_holdings SET units=units+? WHERE id=?", (additional_float, existing["id"]))
+    else:
+        conn.execute("INSERT INTO ppu_holdings (user_id, instrument_id, units) VALUES (0, ?, ?)", (instrument_id, additional_float))
+    conn.commit()
+    conn.close()
+    return {
+        "message": f"Float adjusted by +{additional_float}",
+        "instrument_id": instrument_id,
+        "previous_total_float": inst["total_float"],
+        "new_total_float": new_total,
+        "adjustment": additional_float
+    }
+
+# ====================== BACKEND GAP 5.7: ADMIN SEARCH USERS ======================
+
+@app.get("/api/admin/users/search")
+def admin_search_users(token: str, q: str = Query(""), limit: int = 10):
+    """Search users by username partial match."""
+    require_admin(token)
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, username, role, status, created_at FROM users WHERE id>0 AND username LIKE ? ORDER BY username LIMIT ?",
+        (f"%{q}%", limit)
+    ).fetchall()
+    result = []
+    for u in rows:
+        cash = get_balance(u["id"], "cash")
+        holdings = conn.execute(
+            "SELECT i.id, i.name, h.units FROM ppu_holdings h JOIN instruments i ON h.instrument_id=i.id WHERE h.user_id=? AND h.units>0",
+            (u["id"],)).fetchall()
+        result.append({
+            "id": u["id"],
+            "username": u["username"],
+            "role": u["role"],
+            "status": u.get("status", "active"),
+            "cash_balance": round(cash, 2),
+            "ppu_holdings": [{"instrument_id": h["id"], "instrument_name": h["name"], "units": round(h["units"], 2)} for h in holdings],
+            "created_at": u["created_at"],
+        })
+    conn.close()
+    return result
 
 # ====================== MARKET DATA ======================
 
@@ -385,7 +679,12 @@ def get_user_orders(user_id: int, token: str):
 def list_trades(token: str, instrument_id: int = None, user_id: int = None, limit: int = 50):
     get_user(token)
     conn = get_connection()
-    q = "SELECT t.*, bu.username as buyer_name, su.username as seller_name, i.name as instrument_name FROM trades t JOIN users bu ON t.buyer_id=bu.id JOIN users su ON t.seller_id=su.id JOIN instruments i ON t.instrument_id=i.id WHERE 1=1"
+    q = """SELECT t.*, bu.username as buyer_name, su.username as seller_name, i.name as instrument_name
+           FROM trades t
+           JOIN users bu ON t.buyer_id=bu.id
+           JOIN users su ON t.seller_id=su.id
+           JOIN instruments i ON t.instrument_id=i.id
+           WHERE 1=1"""
     p = []
     if instrument_id:
         q += " AND t.instrument_id=?"
@@ -792,7 +1091,7 @@ def admin_list_users(token: str):
     """List all users with balances and holdings."""
     require_admin(token)
     conn = get_connection()
-    users = conn.execute("SELECT id, username, role, created_at FROM users ORDER BY created_at DESC").fetchall()
+    users = conn.execute("SELECT id, username, role, status, created_at FROM users WHERE id>0 ORDER BY created_at DESC").fetchall()
     result = []
     for u in users:
         cash = get_balance(u["id"], "cash")
@@ -803,6 +1102,7 @@ def admin_list_users(token: str):
             "id": u["id"],
             "username": u["username"],
             "role": u["role"],
+            "status": u.get("status", "active"),
             "cash_balance": round(cash, 2),
             "ppu_holdings": [{"instrument_id": h["id"], "instrument_name": h["name"], "units": round(h["units"], 2)} for h in holdings],
             "created_at": u["created_at"],
