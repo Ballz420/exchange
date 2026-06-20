@@ -22,19 +22,30 @@ def post(ledger_type, user_id, trade_id, instrument_id, debit, credit, descripti
     conn.close()
 
 
-def post_double(ledger_type, dr_user, cr_user, amount, trade_id=None, instrument_id=None, description=""):
-    """Post a double entry: DR one user, CR another user."""
-    conn = get_connection()
-    conn.execute(
-        "INSERT INTO ledger_entries (ledger_type, user_id, trade_id, instrument_id, debit, credit, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (ledger_type, dr_user, trade_id, instrument_id, round(amount, 2), 0, description),
-    )
-    conn.execute(
-        "INSERT INTO ledger_entries (ledger_type, user_id, trade_id, instrument_id, debit, credit, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (ledger_type, cr_user, trade_id, instrument_id, 0, round(amount, 2), description),
-    )
-    conn.commit()
-    conn.close()
+def post_double(ledger_type, dr_user, cr_user, amount, trade_id=None, instrument_id=None, description="", conn=None):
+    """Post a double entry: DR one user, CR another user.
+    If conn is provided, use that connection (no commit). Otherwise open/close."""
+    if conn:
+        conn.execute(
+            "INSERT INTO ledger_entries (ledger_type, user_id, trade_id, instrument_id, debit, credit, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (ledger_type, dr_user, trade_id, instrument_id, round(amount, 2), 0, description),
+        )
+        conn.execute(
+            "INSERT INTO ledger_entries (ledger_type, user_id, trade_id, instrument_id, debit, credit, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (ledger_type, cr_user, trade_id, instrument_id, 0, round(amount, 2), description),
+        )
+    else:
+        c = get_connection()
+        c.execute(
+            "INSERT INTO ledger_entries (ledger_type, user_id, trade_id, instrument_id, debit, credit, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (ledger_type, dr_user, trade_id, instrument_id, round(amount, 2), 0, description),
+        )
+        c.execute(
+            "INSERT INTO ledger_entries (ledger_type, user_id, trade_id, instrument_id, debit, credit, description) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (ledger_type, cr_user, trade_id, instrument_id, 0, round(amount, 2), description),
+        )
+        c.commit()
+        c.close()
 
 
 def get_balance(user_id, ledger_type, instrument_id=None):

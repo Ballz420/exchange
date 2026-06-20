@@ -75,8 +75,8 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS trades (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            buy_order_id    INTEGER NOT NULL REFERENCES orders(id),
-            sell_order_id   INTEGER NOT NULL REFERENCES orders(id),
+            buy_order_id    INTEGER REFERENCES orders(id),
+            sell_order_id   INTEGER REFERENCES orders(id),
             instrument_id   INTEGER NOT NULL REFERENCES instruments(id),
             buyer_id        INTEGER NOT NULL REFERENCES users(id),
             seller_id       INTEGER NOT NULL REFERENCES users(id),
@@ -121,6 +121,9 @@ def init_db():
             paid_at         TEXT NOT NULL DEFAULT (datetime('now'))
         );
     """)
+
+    # Create system account (user_id=0) for exchange treasury operations
+    cursor.execute("INSERT OR IGNORE INTO users (id, username, password_hash, role) VALUES (0, 'system', '', 'admin')")
 
     conn.commit()
     conn.close()

@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel, Field
 from database import init_db, get_connection, DB_PATH
 from ledger import post_double, get_balance, get_statement, reconcile as rec_ledger
+from pnl import user_pnl, avg_cost_basis
 
 # === INIT ===
 init_db()
@@ -604,6 +605,272 @@ showTable('users');
 </script>
 </body>
 </html>"""
+
+# ====================== MARKET ORDER (WISHLIST #1) ======================
+
+class MarketOrderReq(BaseModel):
+    token: str
+    instrument_id: int
+    side: str = Field(..., pattern=r"^(buy|sell)$")
+    quantity: float = Field(..., gt=0)
+
+@app.post("/api/orders/market")
+def market_order(req: MarketOrderReq):
+    """Execute a market order — fill immediately at best available prices."""
+    user = get_user(req.token)
+    conn = get_connection()
+    inst = conn.execute("SELECT id, status FROM instruments WHERE id=?", (req.instrument_id,)).fetchone()
+    if not inst: conn.close(); raise HTTPException(404, "Instrument not found")
+    if inst["status"] != "active": conn.close(); raise HTTPException(400, "Instrument is delisted")
+
+    remaining = req.quantity
+    total_cost = 0
+    total_qty = 0
+    match_count = 0
+    order_id = None
+
+    # Sweep the order book
+    while remaining > 0:
+        if req.side == "buy":
+            resting = conn.execute(
+                "SELECT id, user_id, price, quantity, filled_quantity FROM orders WHERE instrument_id=? AND side='sell' AND status IN ('open','partially_filled') ORDER BY price ASC, created_at ASC LIMIT 1",
+                (req.instrument_id,)).fetchone()
+        else:
+            resting = conn.execute(
+                "SELECT id, user_id, price, quantity, filled_quantity FROM orders WHERE instrument_id=? AND side='buy' AND status IN ('open','partially_filled') ORDER BY price DESC, created_at ASC LIMIT 1",
+                (req.instrument_id,)).fetchone()
+
+        if not resting:
+            break  # No liquidity
+
+        rest_rem = resting["quantity"] - resting["filled_quantity"]
+        match_qty = min(remaining, rest_rem)
+        match_price = resting["price"]
+        trade_total = round(match_qty * match_price, 2)
+
+        # Check buyer/seller balance
+        if req.side == "buy":
+            buyer_id, seller_id = user["user_id"], resting["user_id"]
+            cash_needed = trade_total
+            cash_have = get_balance(buyer_id, "cash")
+            if cash_have < cash_needed:
+                conn.close(); raise HTTPException(400, f"Insufficient cash at price ${match_price}")
+        else:
+            buyer_id, seller_id = resting["user_id"], user["user_id"]
+            ppu_have = get_balance(seller_id, "ppu", req.instrument_id)
+            if ppu_have < match_qty:
+                conn.close(); raise HTTPException(400, f"Insufficient PPUs")
+
+        # Create trade: NULL for the aggressive side (no order), resting order ID for the passive side
+        if req.side == "buy":
+            bo_id, so_id = None, resting["id"]
+        else:
+            bo_id, so_id = resting["id"], None
+        conn.execute(
+            "INSERT INTO trades (buy_order_id, sell_order_id, instrument_id, buyer_id, seller_id, quantity, price, total_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (bo_id, so_id,
+             req.instrument_id, buyer_id, seller_id, match_qty, match_price, trade_total),
+        )
+        trade_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        # Update resting order
+        new_fq = round(resting["filled_quantity"] + match_qty, 2)
+        new_st = "filled" if new_fq >= resting["quantity"] else "partially_filled"
+        conn.execute("UPDATE orders SET filled_quantity=?, status=? WHERE id=?", (new_fq, new_st, resting["id"]))
+
+        # Double-entry (use same connection to avoid lock)
+        post_double("cash", buyer_id, seller_id, trade_total, trade_id=trade_id, instrument_id=req.instrument_id,
+                     description=f"Market Trade #{trade_id}: {match_qty} PPUs @ ${match_price}", conn=conn)
+        post_double("ppu", seller_id, buyer_id, match_qty, trade_id=trade_id, instrument_id=req.instrument_id,
+                     description=f"Market Trade #{trade_id}: {match_qty} PPUs @ ${match_price}", conn=conn)
+
+        # Update holdings
+        for uid, mult in [(buyer_id, 1), (seller_id, -1)]:
+            existing = conn.execute("SELECT id, units FROM ppu_holdings WHERE user_id=? AND instrument_id=?", (uid, req.instrument_id)).fetchone()
+            delta = round(match_qty * mult, 2)
+            if existing:
+                new_units = round(existing["units"] + delta, 2)
+                if new_units < 0: new_units = 0
+                conn.execute("UPDATE ppu_holdings SET units=? WHERE id=?", (new_units, existing["id"]))
+            else:
+                conn.execute("INSERT INTO ppu_holdings (user_id, instrument_id, units) VALUES (?, ?, ?)",
+                             (uid, req.instrument_id, max(delta, 0)))
+
+        remaining = round(remaining - match_qty, 2)
+        total_cost += trade_total
+        total_qty += match_qty
+        match_count += 1
+
+    conn.commit()
+    conn.close()
+
+    avg_price = round(total_cost / total_qty, 2) if total_qty > 0 else 0
+    return {
+        "side": req.side,
+        "price": avg_price,
+        "quantity": req.quantity,
+        "filled_quantity": round(total_qty, 2),
+        "total_cost": round(total_cost, 2),
+        "matches": match_count,
+        "fill_percent": round(total_qty / req.quantity * 100, 1) if req.quantity > 0 else 0,
+    }
+
+
+# ====================== MARKET SUMMARY (WISHLIST #3) ======================
+
+@app.get("/api/instruments/{instrument_id}/summary")
+def instrument_summary(instrument_id: int, token: str):
+    """Unified market summary: last price, volume, daily change, best bid/ask."""
+    get_user(token)
+    conn = get_connection()
+    inst = conn.execute("SELECT * FROM instruments WHERE id=?", (instrument_id,)).fetchone()
+    if not inst: conn.close(); raise HTTPException(404, "Instrument not found")
+
+    # Last trade
+    last_trade = conn.execute(
+        "SELECT price, quantity, created_at FROM trades WHERE instrument_id=? ORDER BY created_at DESC LIMIT 1",
+        (instrument_id,)).fetchone()
+
+    # Today's volume and trades
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    day_trades = conn.execute(
+        "SELECT COUNT(*) as cnt, COALESCE(SUM(quantity),0) as vol FROM trades WHERE instrument_id=? AND date(created_at)=?",
+        (instrument_id, today)).fetchone()
+
+    # Previous close (last trade before today)
+    prev_close = conn.execute(
+        "SELECT price FROM trades WHERE instrument_id=? AND date(created_at)<? ORDER BY created_at DESC LIMIT 1",
+        (instrument_id, today)).fetchone()
+
+    # Order book
+    bid = conn.execute(
+        "SELECT price FROM orders WHERE instrument_id=? AND side='buy' AND status IN ('open','partially_filled') ORDER BY price DESC LIMIT 1",
+        (instrument_id,)).fetchone()
+    ask = conn.execute(
+        "SELECT price FROM orders WHERE instrument_id=? AND side='sell' AND status IN ('open','partially_filled') ORDER BY price ASC LIMIT 1",
+        (instrument_id,)).fetchone()
+
+    conn.close()
+
+    last_price = round(last_trade["price"], 2) if last_trade else None
+    prev_close_price = round(prev_close["price"], 2) if prev_close else (last_price or 0)
+    daily_change = round(last_price - prev_close_price, 2) if last_price and prev_close_price else 0
+    daily_change_pct = round(daily_change / prev_close_price * 100, 2) if prev_close_price > 0 else 0
+    best_bid = round(bid["price"], 2) if bid else None
+    best_ask = round(ask["price"], 2) if ask else None
+    spread = round(best_ask - best_bid, 2) if (best_bid and best_ask) else None
+    mid = round((best_bid + best_ask) / 2, 2) if (best_bid and best_ask) else None
+
+    return {
+        "instrument_id": instrument_id,
+        "name": inst["name"],
+        "last_trade_price": last_price,
+        "daily_change": daily_change,
+        "daily_change_pct": daily_change_pct,
+        "daily_volume": round(day_trades["vol"], 2),
+        "total_trades_today": day_trades["cnt"],
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "spread": spread,
+        "mid_price": mid,
+    }
+
+
+# ====================== P&L (WISHLIST #2) ======================
+
+@app.get("/api/accounts/{user_id}/pnl")
+def get_pnl(user_id: int, token: str):
+    """Get mark-to-market P&L for a user."""
+    get_user(token)
+    return user_pnl(user_id)
+
+
+# ====================== ADMIN: LIST USERS (WISHLIST #4) ======================
+
+@app.get("/api/admin/users")
+def admin_list_users(token: str):
+    """List all users with balances and holdings."""
+    require_admin(token)
+    conn = get_connection()
+    users = conn.execute("SELECT id, username, role, created_at FROM users ORDER BY created_at DESC").fetchall()
+    result = []
+    for u in users:
+        cash = get_balance(u["id"], "cash")
+        holdings = conn.execute(
+            "SELECT i.id, i.name, h.units FROM ppu_holdings h JOIN instruments i ON h.instrument_id=i.id WHERE h.user_id=? AND h.units>0",
+            (u["id"],)).fetchall()
+        result.append({
+            "id": u["id"],
+            "username": u["username"],
+            "role": u["role"],
+            "cash_balance": round(cash, 2),
+            "ppu_holdings": [{"instrument_id": h["id"], "instrument_name": h["name"], "units": round(h["units"], 2)} for h in holdings],
+            "created_at": u["created_at"],
+        })
+    conn.close()
+    return result
+
+
+# ====================== ADMIN: ALL ORDERS (WISHLIST #5) ======================
+
+@app.get("/api/admin/orders")
+def admin_list_orders(token: str, status: str = None, instrument_id: int = None, limit: int = 100):
+    """List all orders across all users (admin only)."""
+    require_admin(token)
+    conn = get_connection()
+    q = """SELECT o.*, u.username, i.name as instrument_name
+           FROM orders o
+           JOIN users u ON o.user_id=u.id
+           JOIN instruments i ON o.instrument_id=i.id
+           WHERE 1=1"""
+    p = []
+    if status:
+        q += " AND o.status=?"
+        p.append(status)
+    if instrument_id:
+        q += " AND o.instrument_id=?"
+        p.append(instrument_id)
+    q += " ORDER BY o.created_at DESC LIMIT ?"
+    p.append(limit)
+    rows = conn.execute(q, p).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ====================== ADMIN: ALL HOLDINGS (WISHLIST #6) ======================
+
+@app.get("/api/admin/holdings")
+def admin_list_holdings(token: str, instrument_id: int = None):
+    """List all PPU holdings across all users with cost basis."""
+    require_admin(token)
+    conn = get_connection()
+    q = """SELECT h.*, u.username, i.name as instrument_name
+           FROM ppu_holdings h
+           JOIN users u ON h.user_id=u.id
+           JOIN instruments i ON h.instrument_id=i.id
+           WHERE h.units > 0"""
+    p = []
+    if instrument_id:
+        q += " AND h.instrument_id=?"
+        p.append(instrument_id)
+    q += " ORDER BY h.units DESC"
+    rows = conn.execute(q, p).fetchall()
+    conn.close()
+    result = []
+    for r in rows:
+        acb = avg_cost_basis(r["user_id"], r["instrument_id"])
+        result.append({
+            "user_id": r["user_id"],
+            "username": r["username"],
+            "instrument_id": r["instrument_id"],
+            "instrument_name": r["instrument_name"],
+            "units": round(r["units"], 2),
+            "avg_cost_basis": acb,
+        })
+    return result
+
+
+# ====================== STATIC FILES ======================
 
 @app.get("/admin", response_class=HTMLResponse)
 def admin_panel():
