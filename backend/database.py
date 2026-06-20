@@ -1,7 +1,20 @@
+"""
+FASEM-P Exchange Database
+Visible, interpretable schema with full referential integrity.
+
+Tables:
+  users              — Traders and admins
+  instruments        — PPU securities listed on exchange
+  ppu_holdings       — User PPU balances
+  orders             — Buy/sell limit orders
+  trades             — Executed trades
+  ledger_entries     — Double-entry accounting (cash + ppu)
+  profit_declarations — Company profit events
+  profit_distributions — Payouts to PPU holders
+"""
 import sqlite3
 import os
 
-# Use environment variable if set (for Docker/Render), otherwise default to local
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "cemos.db"))
 
 
@@ -19,143 +32,93 @@ def init_db():
 
     cursor.executescript("""
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            username    TEXT UNIQUE NOT NULL,
             password_hash TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('buyer', 'seller', 'admin')),
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            role        TEXT NOT NULL DEFAULT 'trader'
+                        CHECK(role IN ('trader', 'admin')),
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
-        CREATE TABLE IF NOT EXISTS commodities (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            unit_of_measure TEXT NOT NULL,
-            description TEXT DEFAULT ''
+        CREATE TABLE IF NOT EXISTS instruments (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT UNIQUE NOT NULL,
+            description TEXT DEFAULT '',
+            total_float REAL NOT NULL DEFAULT 0
+                        CHECK(total_float >= 0),
+            status      TEXT NOT NULL DEFAULT 'active'
+                        CHECK(status IN ('active', 'delisted')),
+            created_by  INTEGER NOT NULL REFERENCES users(id),
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
-        CREATE TABLE IF NOT EXISTS rfqs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            buyer_id INTEGER NOT NULL REFERENCES users(id),
-            commodity_id INTEGER NOT NULL REFERENCES commodities(id),
-            quantity REAL NOT NULL CHECK(quantity > 0),
-            status TEXT NOT NULL DEFAULT 'open'
-                CHECK(status IN ('open', 'responded', 'accepted', 'cancelled')),
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        CREATE TABLE IF NOT EXISTS ppu_holdings (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id         INTEGER NOT NULL REFERENCES users(id),
+            instrument_id   INTEGER NOT NULL REFERENCES instruments(id),
+            units           REAL NOT NULL DEFAULT 0 CHECK(units >= 0),
+            UNIQUE(user_id, instrument_id)
         );
 
-        CREATE TABLE IF NOT EXISTS rfq_responses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            rfq_id INTEGER NOT NULL REFERENCES rfqs(id),
-            seller_id INTEGER NOT NULL REFERENCES users(id),
-            price_per_unit REAL NOT NULL CHECK(price_per_unit > 0),
-            quantity_available REAL NOT NULL CHECK(quantity_available > 0),
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        CREATE TABLE IF NOT EXISTS orders (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id         INTEGER NOT NULL REFERENCES users(id),
+            instrument_id   INTEGER NOT NULL REFERENCES instruments(id),
+            side            TEXT NOT NULL CHECK(side IN ('buy', 'sell')),
+            price           REAL NOT NULL CHECK(price > 0),
+            quantity        REAL NOT NULL CHECK(quantity > 0),
+            filled_quantity REAL NOT NULL DEFAULT 0 CHECK(filled_quantity >= 0),
+            status          TEXT NOT NULL DEFAULT 'open'
+                            CHECK(status IN ('open', 'filled', 'partially_filled', 'cancelled')),
+            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            rfq_id INTEGER NOT NULL REFERENCES rfqs(id),
-            buyer_id INTEGER NOT NULL REFERENCES users(id),
-            seller_id INTEGER NOT NULL REFERENCES users(id),
-            commodity_id INTEGER NOT NULL REFERENCES commodities(id),
-            quantity REAL NOT NULL CHECK(quantity > 0),
-            price_per_unit REAL NOT NULL CHECK(price_per_unit > 0),
-            total_value REAL NOT NULL,
-            status TEXT NOT NULL DEFAULT 'pending'
-                CHECK(status IN ('pending', 'escrow_funded', 'delivery_confirmed', 'settled', 'disputed')),
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            settled_at TEXT
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            buy_order_id    INTEGER NOT NULL REFERENCES orders(id),
+            sell_order_id   INTEGER NOT NULL REFERENCES orders(id),
+            instrument_id   INTEGER NOT NULL REFERENCES instruments(id),
+            buyer_id        INTEGER NOT NULL REFERENCES users(id),
+            seller_id       INTEGER NOT NULL REFERENCES users(id),
+            quantity        REAL NOT NULL CHECK(quantity > 0),
+            price           REAL NOT NULL CHECK(price > 0),
+            total_value     REAL NOT NULL CHECK(total_value > 0),
+            created_at      TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
         CREATE TABLE IF NOT EXISTS ledger_entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ledger_type TEXT NOT NULL CHECK(ledger_type IN ('cash', 'unit')),
-            account_id INTEGER NOT NULL,
-            trade_id INTEGER NOT NULL REFERENCES trades(id),
-            debit REAL NOT NULL DEFAULT 0 CHECK(debit >= 0),
-            credit REAL NOT NULL DEFAULT 0 CHECK(credit >= 0),
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ledger_type TEXT NOT NULL CHECK(ledger_type IN ('cash', 'ppu')),
+            user_id     INTEGER NOT NULL REFERENCES users(id),
+            trade_id    INTEGER REFERENCES trades(id),
+            instrument_id INTEGER REFERENCES instruments(id),
+            debit       REAL NOT NULL DEFAULT 0 CHECK(debit >= 0),
+            credit      REAL NOT NULL DEFAULT 0 CHECK(credit >= 0),
+            description TEXT NOT NULL DEFAULT '',
+            created_at  TEXT NOT NULL DEFAULT (datetime('now'))
         );
 
-        CREATE TABLE IF NOT EXISTS settlement_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            trade_id INTEGER NOT NULL REFERENCES trades(id),
-            event_type TEXT NOT NULL,
-            description TEXT DEFAULT '',
-            created_by INTEGER NOT NULL REFERENCES users(id),
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        CREATE TABLE IF NOT EXISTS profit_declarations (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            instrument_id   INTEGER NOT NULL REFERENCES instruments(id),
+            period_label    TEXT NOT NULL,
+            total_profit    REAL NOT NULL CHECK(total_profit > 0),
+            profit_per_ppu  REAL NOT NULL DEFAULT 0,
+            total_ppus      REAL NOT NULL DEFAULT 0,
+            status          TEXT NOT NULL DEFAULT 'declared'
+                            CHECK(status IN ('declared', 'distributed')),
+            declared_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            distributed_at  TEXT
         );
 
-        CREATE TABLE IF NOT EXISTS disputes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            trade_id INTEGER NOT NULL REFERENCES trades(id),
-            reason TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'resolved', 'rejected')),
-            resolution TEXT DEFAULT '',
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        -- ==================== FASEM-P TABLES ====================
-
-        CREATE TABLE IF NOT EXISTS fasem_companies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            description TEXT DEFAULT '',
-            sector TEXT DEFAULT '',
-            founder_user_id INTEGER NOT NULL REFERENCES users(id),
-            float_ratio REAL NOT NULL DEFAULT 0.5 CHECK(float_ratio >= 0.0 AND float_ratio <= 1.0),
-            total_ppus_issued REAL NOT NULL DEFAULT 0,
-            ppu_face_value REAL NOT NULL DEFAULT 1.0,
-            total_capital_raised REAL NOT NULL DEFAULT 0.0,
-            capital_compliant INTEGER NOT NULL DEFAULT 1,
-            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'suspended', 'delisted')),
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS fasem_ppus (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            company_id INTEGER NOT NULL REFERENCES fasem_companies(id),
-            owner_id INTEGER NOT NULL REFERENCES users(id),
-            units REAL NOT NULL DEFAULT 0,
-            purchase_price REAL NOT NULL DEFAULT 0.0,
-            total_cost REAL NOT NULL DEFAULT 0.0,
-            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'transferred', 'redeemed')),
-            created_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS fasem_profit_declarations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            company_id INTEGER NOT NULL REFERENCES fasem_companies(id),
-            period_label TEXT NOT NULL,
-            total_profit REAL NOT NULL DEFAULT 0.0,
-            retained_profit REAL NOT NULL DEFAULT 0.0,
-            distributable_profit REAL NOT NULL DEFAULT 0.0,
-            total_ppus_at_declaration REAL NOT NULL DEFAULT 0.0,
-            profit_per_ppu REAL NOT NULL DEFAULT 0.0,
-            status TEXT NOT NULL DEFAULT 'declared' CHECK(status IN ('declared', 'distributed')),
-            declared_at TEXT NOT NULL DEFAULT (datetime('now')),
-            distributed_at TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS fasem_profit_distributions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            declaration_id INTEGER NOT NULL REFERENCES fasem_profit_declarations(id),
-            owner_id INTEGER NOT NULL REFERENCES users(id),
-            ppu_id INTEGER REFERENCES fasem_ppus(id),
-            units_held REAL NOT NULL DEFAULT 0.0,
-            amount_paid REAL NOT NULL DEFAULT 0.0,
-            paid_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS fasem_capital_deployments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            company_id INTEGER NOT NULL REFERENCES fasem_companies(id),
-            amount REAL NOT NULL DEFAULT 0.0,
-            category TEXT NOT NULL CHECK(category IN ('expansion','equipment','facilities','inventory','wages','logistics')),
-            description TEXT DEFAULT '',
-            receipt_reference TEXT DEFAULT '',
-            is_permitted INTEGER NOT NULL DEFAULT 1,
-            deployed_at TEXT NOT NULL DEFAULT (datetime('now'))
+        CREATE TABLE IF NOT EXISTS profit_distributions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            declaration_id  INTEGER NOT NULL REFERENCES profit_declarations(id),
+            user_id         INTEGER NOT NULL REFERENCES users(id),
+            ppu_holding_id  INTEGER NOT NULL REFERENCES ppu_holdings(id),
+            units_held      REAL NOT NULL DEFAULT 0,
+            amount_paid     REAL NOT NULL DEFAULT 0,
+            paid_at         TEXT NOT NULL DEFAULT (datetime('now'))
         );
     """)
 
