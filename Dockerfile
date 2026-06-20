@@ -1,21 +1,19 @@
-# Use Python 3.12 slim image
+# FASEM-P Exchange Backend
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Copy requirements and install dependencies
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the entire backend
-COPY backend/ ./backend/
+# Copy the entire backend (flat structure: main.py, database.py, ledger.py)
+COPY backend/ ./
 
-# Set environment variables
+# Environment
 ENV PYTHONPATH=/app
-ENV DB_PATH=/app/backend/cemos.db
+ENV DB_PATH=/app/cemos.db
 
-# Expose the port
 EXPOSE 8000
 
-# Run with uvicorn
-CMD ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
