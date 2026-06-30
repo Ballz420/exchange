@@ -1,0 +1,24 @@
+name: FASEM-P CI/CD
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python syntax
+        run: python -c "compile(open('backend/main.py').read(),'main.py','exec')"
+      - name: Admin JS
+        run: node --check "admin app/admin.js" || node --check admin\ app/admin.js
+      - name: Broker JS
+        run: node --check Basic-broker/app.js
+  deploy:
+    needs: lint
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trigger Render deploy
+        run: |
+          curl -X POST "https://api.render.com/deploy/srv-xxx?key=xxx"

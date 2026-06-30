@@ -1,0 +1,33 @@
+==============================================================================
+  API WISHLIST — ALL DEMANDS FULFILLED
+  Target: FASEM-P EXCHANGE API v2.0.0
+  Date: 2026-06-20
+  Status: ✅ ALL 6 ENDPOINTS IMPLEMENTED IN BACKEND
+==============================================================================
+
+All requested API endpoints have been added to the backend. See API_MASTER.txt
+for the full updated specification.
+
+1. ✅ MARKET ORDER ENDPOINT
+   Endpoint: POST /api/orders/market
+   — Implemented in main.py (lines 617-716)
+
+2. ✅ USER P&L ENDPOINT
+   Endpoint: GET /api/accounts/{user_id}/pnl
+   — Implemented in main.py (lines 781-785), uses pnl.py
+
+3. ✅ MARKET SUMMARY ENDPOINT
+   Endpoint: GET /api/instruments/{instrument_id}/summary
+   — Implemented in main.py (lines 721-776)
+
+4. ✅ LIST ALL USERS (Admin)
+   Endpoint: GET /api/admin/users
+   — Implemented in main.py (lines 790-811)
+
+5. ✅ LIST ALL ORDERS (Admin)
+   Endpoint: GET /api/admin/orders
+   — Implemented in main.py (lines 816-837)
+
+6. ✅ LIST ALL HOLDINGS (Admin)
+   Endpoint: GET /api/admin/holdings
+   — Implemented in main.py (lines 842-870)

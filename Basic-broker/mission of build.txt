@@ -1,0 +1,24 @@
+you job is to build a very hyper simple broker, app for consumer/institonal usage. Using "C:\APP\cemos-mvp\API_MASTER.txt" as your API reference to the back end.
+Basic-brokers is a broker to get market access for buyers and sellers
+
+You are to build
+
+Account/user abilities
+-login, password, etc
+
+order
+-Market
+-Limit order
+etc
+
+position
+-total cash
+-positions
+-what ur in
+
+account total
+-unrealized, realized, positions
+
+what you believe you can't make via the APIs, add all desired request to "C:\APP\Basic-broker\APIwishlist.txt", in very specific build and request to add details
+
+

@@ -1,0 +1,23 @@
+version: "3.9"
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_PATH=/app/data/cemos.db
+      - CORS_ORIGINS=*
+      - TOKEN_EXPIRY_HOURS=24
+    volumes:
+      - ./cemos-mvp/backend/main.py:/app/backend/main.py
+      - ./cemos-mvp/backend/database.py:/app/backend/database.py
+      - ./cemos-mvp/backend/ledger.py:/app/backend/ledger.py
+      - ./cemos-mvp/backend/pnl.py:/app/backend/pnl.py
+      - ./Basic-broker:/app/frontend/broker
+      - ./admin app:/app/frontend/admin
+      - fasem_data_dev:/app/data
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+volumes:
+  fasem_data_dev:

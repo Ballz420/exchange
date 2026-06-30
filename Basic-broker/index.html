@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Basic-broker</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ========== AUTH CONTAINER ========== -->
+  <div id="authContainer" class="auth-container">
+    <!-- Dynamically populated by app.js -->
+  </div>
+
+  <!-- ========== APP SHELL ========== -->
+  <div id="appShell" style="display:none">
+
+    <!-- HEADER -->
+    <header class="app-header">
+      <div class="app-logo">
+        <span>Basic-broker</span>
+        <small>powered by FASEM-P</small>
+      </div>
+      <div class="app-user">
+        <span id="userDisplay"></span>
+        <span class="role-badge" id="userRoleDisplay"></span>
+        <span class="role-badge" id="kycBadge" style="border-color:var(--accent-amber);color:var(--accent-amber);display:none">KYC: --</span>
+        <a href="/admin-panel" target="_blank" id="linkAdmin" class="btn-logout" style="display:none;border-color:var(--accent-blue);color:var(--accent-blue)">Admin</a>
+        <button class="btn-logout" onclick="handleLogout()">Logout</button>
+      </div>
+    </header>
+
+    <!-- NAV -->
+    <nav class="app-nav">
+      <button class="nav-btn" data-view="dashboard" onclick="navigateTo('dashboard')">Dashboard</button>
+      <button class="nav-btn" data-view="market" onclick="navigateTo('market')">Market</button>
+      <button class="nav-btn" data-view="trade" onclick="navigateTo('trade')">Trade</button>
+      <button class="nav-btn" data-view="orders" onclick="navigateTo('orders')">Orders</button>
+      <button class="nav-btn" data-view="history" onclick="navigateTo('history')">History</button>
+      <button class="nav-btn" id="navAdmin" data-view="admin" onclick="navigateTo('admin')" style="display:none;color:var(--accent-yellow)">Admin</button>
+    </nav>
+
+    <!-- MAIN CONTENT -->
+    <main class="app-main">
+
+      <!-- Dashboard -->
+      <div id="view-dashboard" class="view active">
+        <div class="loading">Loading dashboard</div>
+      </div>
+
+      <!-- Market -->
+      <div id="view-market" class="view">
+        <div class="loading">Loading market data</div>
+      </div>
+
+      <!-- Trade -->
+      <div id="view-trade" class="view">
+        <div class="loading">Loading trade</div>
+      </div>
+
+      <!-- Orders -->
+      <div id="view-orders" class="view">
+        <div class="loading">Loading orders</div>
+      </div>
+
+      <!-- History -->
+      <div id="view-history" class="view">
+        <div class="loading">Loading trade history</div>
+      </div>
+
+      <!-- Admin -->
+      <div id="view-admin" class="view">
+        <div class="loading">Loading admin panel</div>
+      </div>
+
+    </main>
+
+  </div>
+
+  <!-- ========== TOAST CONTAINER ========== -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- ========== SCRIPTS ========== -->
+  <script src="app.js"></script>
+
+</body>
+</html>

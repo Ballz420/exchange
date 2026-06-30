@@ -1,0 +1,20 @@
+version: "3.9"
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_PATH=/app/data/cemos.db
+      - CORS_ORIGINS=http://localhost:3000,http://localhost:8000
+      - TOKEN_EXPIRY_HOURS=24
+    volumes:
+      - fasem_data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+volumes:
+  fasem_data:
