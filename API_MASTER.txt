@@ -1,0 +1,331 @@
+================================================================================
+  FASEM-P EXCHANGE — API MASTER DOCUMENT
+  Version: 2.0.0 | Protocol: HTTP/REST | Format: JSON
+  Base URL: http://localhost:8000
+================================================================================
+
+All endpoints require a `token` parameter (obtained via /api/auth/login)
+except /api/health, /api/auth/register, and /api/auth/login.
+
+Admin endpoints require role='admin'.
+
+================================================================================
+CATEGORY 1: SYSTEM & HEALTH
+================================================================================
+
+  1.1  Health Check
+       GET  /api/health
+       Auth: None
+       Response: {"status": "ok", "version": "2.0.0", "db": "/path/to/cemos.db"}
+
+================================================================================
+CATEGORY 2: AUTHENTICATION
+================================================================================
+
+  2.1  Register User
+       POST /api/auth/register
+       Auth: None
+       Body:  {"username": "str", "password": "str", "role": "trader|admin"}
+       Response: {"id": 1, "username": "str", "role": "trader"}
+
+  2.2  Login (get API token)
+       POST /api/auth/login
+       Auth: None
+       Body:  {"username": "str", "password": "str"}
+       Response: {"token": "hex_string", "user_id": 1, "username": "str", "role": "trader"}
+
+       NOTE: Store the token and pass it as a query parameter or in the request
+       body to all subsequent API calls. Tokens expire on server restart.
+
+================================================================================
+CATEGORY 3: DATABASE VIEWER (Discoverability)
+================================================================================
+
+  3.1  View Database Schema (DDL)
+       GET  /api/db/schema
+       Auth: Token (any user)
+       Response: {"tables": ["CREATE TABLE users...", "CREATE TABLE instruments...", ...]}
+
+  3.2  List All Tables with Row Counts
+       GET  /api/db/tables
+       Auth: Token (any user)
+       Response: [{"name": "users", "rows": 5}, {"name": "instruments", "rows": 2}, ...]
+
+  3.3  View Table Contents
+       GET  /api/db/table/{table_name}?human=0&limit=100
+       Auth: Token (any user)
+       Params:
+         human=1  → enriches foreign keys with human-readable names
+         limit=N  → max rows to return (default 100)
+       Response: [{"id": 1, "username": "admin", ...}, ...]
+
+       Available tables:
+         users, instruments, ppu_holdings, orders, trades,
+         ledger_entries, profit_declarations, profit_distributions
+
+================================================================================
+CATEGORY 4: ADMIN — INSTRUMENT MANAGEMENT (IPO)
+================================================================================
+
+  4.1  Create/List New PPU Instrument (IPO)
+       POST /api/admin/instruments
+       Auth: Admin token
+       Body:  {"token": "str", "name": "str", "description": "str", "total_float": 10000}
+       Response: {"instrument_id": 1, "name": "str", "total_float": 10000,
+                  "message": "PPU instrument listed (IPO)"}
+
+       NOTE: total_float is the total number of PPU units that will ever exist.
+       This is the "IPO" — once created, the float is fixed.
+
+  4.2  Update Instrument Status (active/delisted)
+       PUT  /api/admin/instruments/{instrument_id}?token=admin_token&status=delisted
+       Auth: Admin token
+       Params: status = "active" | "delisted"
+       Response: {"message": "Instrument updated to 'delisted'"}
+
+       NOTE: "delisted" means no new orders can be placed, but existing
+       holdings remain. The float is still tracked in the ledger.
+
+================================================================================
+CATEGORY 5: ADMIN — FUNDING & CREDIT
+================================================================================
+
+  5.1  Credit Cash to User
+       POST /api/admin/cash/credit
+       Auth: Admin token
+       Body:  {"token": "str", "user_id": 1, "amount": 50000.00}
+       Response: {"message": "Credited $50000.0 to user 1",
+                  "new_balance": 50000.0}
+
+       NOTE: Cash is credited from the system account (user 0).
+       The cash ledger always nets to zero across all accounts.
+
+  5.2  Credit PPUs to User
+       POST /api/admin/ppu/credit
+       Auth: Admin token
+       Body:  {"token": "str", "user_id": 1, "instrument_id": 1, "units": 5000}
+       Response: {"message": "Credited 5000 PPUs to user 1",
+                  "new_balance": 5000.0}
+
+       NOTE: PPUs are credited from the system account (user 0).
+       The PPU ledger total always equals the total float of active instruments.
+
+================================================================================
+CATEGORY 6: MARKET DATA
+================================================================================
+
+  6.1  List All PPU Instruments
+       GET  /api/instruments?token=user_token
+       Auth: Token (any user)
+       Params: status = "active" | "delisted" (optional filter)
+       Response: [{"id": 1, "name": "SomaliAgri PPU", "description": "...",
+                   "total_float": 10000, "status": "active",
+                   "created_by": 1, "created_at": "2026-06-20 ..."}, ...]
+
+  6.2  View Order Book (Bid/Ask Ladder)
+       GET  /api/orderbook/{instrument_id}?token=user_token
+       Auth: Token (any user)
+       Response: {
+         "instrument_id": 1,
+         "bids": [{"id": 1, "user_id": 1, "price": 15.00, "quantity": 1000,
+                   "filled_quantity": 500, "remaining": 500}, ...],
+         "asks": [{"id": 2, "user_id": 2, "price": 16.00, "quantity": 1000,
+                   "filled_quantity": 0, "remaining": 1000}, ...],
+         "best_bid": 15.00,
+         "best_ask": 16.00,
+         "spread": 1.00,
+         "mid_price": 15.50
+       }
+
+================================================================================
+CATEGORY 7: TRADING — ORDER PLACEMENT
+================================================================================
+
+  7.1  Place Limit Order (Buy or Sell)
+       POST /api/orders/place
+       Auth: Token (any user)
+       Body:  {
+         "token": "str",
+         "instrument_id": 1,
+         "side": "buy|sell",
+         "price": 15.00,
+         "quantity": 500
+       }
+       Response: {
+         "order_id": 3,
+         "side": "buy",
+         "price": 15.00,
+         "quantity": 500,
+         "matches": 1  ← number of trades executed immediately
+       }
+
+       TRADING RULES:
+       - Price-Time Priority: orders sorted by best price, then earliest
+       - Matching price = resting order's price (maker gets their limit)
+       - Buyers must have sufficient cash balance before order is placed
+       - Sellers must have sufficient PPU balance before order is placed
+       - Partial fills are supported (status = 'partially_filled')
+       - Automatic matching: placing a new order immediately checks
+         if it can be matched against resting orders
+
+  7.2  Cancel Open Order
+       POST /api/orders/cancel/{order_id}?token=user_token
+       Body:  {"token": "str"} (or pass as query param)
+       Auth: Token (order owner or admin)
+       Constraints: Only orders with status "open" or "partially_filled"
+       Response: {"message": "Order cancelled"}
+
+  7.3  List User Orders
+       GET  /api/orders/user/{user_id}?token=user_token
+       Auth: Token (any user)
+       Response: [{"id": 1, "user_id": 1, "instrument_id": 1,
+                   "side": "buy", "price": 15.00, "quantity": 1000,
+                   "filled_quantity": 500, "status": "partially_filled",
+                   "created_at": "2026-06-20 ..."}, ...]
+
+================================================================================
+CATEGORY 8: TRADING — TRADE HISTORY
+================================================================================
+
+  8.1  List Executed Trades
+       GET  /api/trades?token=user_token
+       Auth: Token (any user)
+       Params: instrument_id=N (filter by instrument)
+               user_id=N (filter by user involvement)
+               limit=N (max rows, default 50)
+       Response: [{
+         "id": 1,
+         "buy_order_id": 3, "sell_order_id": 2,
+         "instrument_id": 1,
+         "buyer_id": 1, "buyer_name": "buyer",
+         "seller_id": 2, "seller_name": "seller",
+         "instrument_name": "SomaliAgri PPU",
+         "quantity": 500,
+         "price": 15.00,
+         "total_value": 7500.00,
+         "created_at": "2026-06-20 ..."
+       }, ...]
+
+================================================================================
+CATEGORY 9: ACCOUNTING & LEDGER
+================================================================================
+
+  9.1  Get User Account Summary
+       GET  /api/accounts/{user_id}?token=user_token
+       Auth: Token (any user)
+       Response: {
+         "user_id": 1,
+         "cash_balance": 42500.00,
+         "ppu_holdings": [{"holding_id": 1, "name": "SomaliAgri PPU", "units": 500}]
+       }
+
+  9.2  Get Full Double-Entry Ledger Statement
+       GET  /api/ledger/{user_id}?token=user_token
+       Auth: Token (any user)
+       Response: [{
+         "id": 1,
+         "ledger_type": "cash",
+         "user_id": 1,
+         "trade_id": 1,
+         "instrument_id": 1,
+         "debit": 7500.00,
+         "credit": 0.00,
+         "description": "Trade #1: 500 PPUs @ $15.00",
+         "created_at": "2026-06-20 ..."
+       }, ...]
+
+       LEDGER ACCOUNTING:
+       - "cash" ledger: debit = money leaving user, credit = money arriving
+       - "ppu" ledger:  debit = PPUs leaving user, credit = PPUs arriving
+       - Cash ledger always nets to $0 across ALL users
+       - PPU ledger total always equals the total float of active instruments
+
+  9.3  Ledger Reconciliation
+       GET  /api/reconcile?token=user_token
+       Auth: Token (any user)
+       Response: {
+         "cash_net_zero": true,      ← cash ledger integrity check
+         "cash_total": 0.00,         ← should always be 0
+         "ppu_matches_float": true,  ← PPU ledger integrity check
+         "ppu_total": 10000.00,      ← total PPUs in circulation
+         "instrument_float": 10000.00, ← total float from instruments
+         "all_balanced": true        ← both checks passed
+       }
+
+================================================================================
+CATEGORY 10: PROFIT DISTRIBUTION
+================================================================================
+
+  10.1 Declare Profit for an Instrument
+       POST /api/profit/declare
+       Auth: Token (any user — typically admin)
+       Body:  {
+         "token": "str",
+         "instrument_id": 1,
+         "period_label": "Q1-2026",
+         "total_profit": 50000.00
+       }
+       Response: {
+         "declaration_id": 1,
+         "profit_per_ppu": 5.00,   ← 50000 / 10000 float
+         "total_ppus": 10000
+       }
+
+       FORMULA: profit_per_ppu = total_profit / total_float
+
+  10.2 Distribute Profit to All PPU Holders
+       POST /api/profit/distribute/{declaration_id}?token=user_token
+       Auth: Token (any user — typically admin)
+       Response: {
+         "message": "Distributed to 2 holders",
+         "profit_per_ppu": 5.00
+       }
+
+       DISTRIBUTION RULES:
+       - Only distributed once per declaration
+       - Each holder receives: units_held × profit_per_ppu
+       - Cash is automatically credited to each holder's account
+       - Distribution creates entries in both profit_distributions and
+         the cash ledger
+
+  10.3 View Profit Declaration History
+       GET  /api/profit/history/{instrument_id}?token=user_token
+       Auth: Token (any user)
+       Response: [{
+         "id": 1,
+         "instrument_id": 1,
+         "period_label": "Q1-2026",
+         "total_profit": 50000.00,
+         "profit_per_ppu": 5.00,
+         "total_ppus": 10000,
+         "status": "distributed",
+         "declared_at": "2026-06-20 ...",
+         "distributed_at": "2026-06-20 ..."
+       }, ...]
+
+================================================================================
+CATEGORY 11: ADMIN DASHBOARD (Web UI)
+================================================================================
+
+  11.1 Admin Dashboard
+       GET  /admin
+       Auth: None (browser-based)
+       Returns: HTML page with dark-theme interface showing:
+         - Reconciliation status (cash net zero, PPU total)
+         - Table viewer for all 8 database tables
+         - Human-readable foreign key enrichment
+         - Clickable table tabs
+
+================================================================================
+CATEGORY 12: SWAGGER / OPENAPI
+================================================================================
+
+  12.1 Interactive API Documentation
+       GET  /docs
+       Auth: None
+       Returns: Swagger UI with full interactive documentation for all endpoints.
+       Try any endpoint directly in the browser.
+
+================================================================================
+END OF API MASTER DOCUMENT
+================================================================================
